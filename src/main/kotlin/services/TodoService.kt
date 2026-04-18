@@ -14,7 +14,6 @@ import kotlinx.coroutines.withContext
 import org.delcom.data.AppException
 import org.delcom.data.DataResponse
 import org.delcom.data.TodoRequest
-import org.delcom.data.TodoStats
 import org.delcom.helpers.ServiceHelper
 import org.delcom.helpers.ValidatorHelper
 import org.delcom.repositories.ITodoRepository
@@ -31,29 +30,13 @@ class TodoService(
         val user = ServiceHelper.getAuthUser(call, userRepo)
 
         val search = call.request.queryParameters["search"] ?: ""
-        val status = call.request.queryParameters["status"] ?: "all"
-        val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
-        val perPage = call.request.queryParameters["perPage"]?.toIntOrNull() ?: 10
 
-        val result = todoRepo.getAll(user.id, search, status, page, perPage)
+        val todos = todoRepo.getAll(user.id, search)
 
         val response = DataResponse(
             "success",
             "Berhasil mengambil daftar todo saya",
-            result
-        )
-        call.respond(response)
-    }
-
-    // Mengambil statistik todo
-    suspend fun getStats(call: ApplicationCall) {
-        val user = ServiceHelper.getAuthUser(call, userRepo)
-        val stats = todoRepo.getStats(user.id)
-
-        val response = DataResponse(
-            "success",
-            "Berhasil mengambil statistik todo",
-            stats
+            mapOf(Pair("todos", todos))
         )
         call.respond(response)
     }
