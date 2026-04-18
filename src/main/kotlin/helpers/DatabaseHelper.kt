@@ -21,8 +21,7 @@ fun Application.configureDatabases() {
         password = dbPassword
     )
 
-    // Tambahkan ini untuk sinkronisasi tabel dan kolom baru
     transaction(database) {
-        SchemaUtils.createMissingTablesAndColumns(UserTable, TodoTable, RefreshTokenTable)
+        SchemaUtils.create(UserTable, TodoTable, RefreshTokenTable)
     }
 }

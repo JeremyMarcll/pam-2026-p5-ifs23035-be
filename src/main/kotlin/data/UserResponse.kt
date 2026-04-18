@@ -10,7 +10,6 @@ data class UserResponse(
     var name: String = "",
     var username: String = "",
     var photo: String? = null,
-    var bio: String? = null,
     var createdAt: Instant = Clock.System.now(),
     var updatedAt: Instant = Clock.System.now(),
 )

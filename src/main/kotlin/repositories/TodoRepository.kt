@@ -1,6 +1,8 @@
 package org.delcom.repositories
 
 import org.delcom.dao.TodoDAO
+import org.delcom.data.TodoListResponse
+import org.delcom.data.TodoStats
 import org.delcom.entities.Todo
 import org.delcom.helpers.suspendTransaction
 import org.delcom.helpers.todoDAOToModel
@@ -8,62 +10,94 @@ import org.delcom.tables.TodoTable
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
+import org.slf4j.LoggerFactory
 import java.util.*
 
-class TodoRepository : ITodoRepository {
+// Helper untuk menghindari crash saat parsing UUID
+fun String.toUUIDOrNull(): UUID? = try { UUID.fromString(this) } catch (e: Exception) { null }
+
+class TodoRepository(private val baseUrl: String) : ITodoRepository {
+    private val logger = LoggerFactory.getLogger(TodoRepository::class.java)
+
     override suspend fun getAll(
-        userId: String,
-        search: String,
-        isDone: Boolean?,
-        urgency: String?,
-        page: Int,
+        userId: String, 
+        search: String, 
+        status: String, 
+        page: Int, 
         perPage: Int
-    ): List<Todo> = suspendTransaction {
-        val userUuid = UUID.fromString(userId)
-        val offset = ((page - 1) * perPage).toLong()
+    ): TodoListResponse = suspendTransaction {
+        val userUuid = userId.toUUIDOrNull() ?: return@suspendTransaction TodoListResponse(emptyList(), 0, page, perPage)
         
-        TodoDAO.find {
-            var op: Op<Boolean> = TodoTable.userId eq userUuid
-            
-            if (search.isNotBlank()) {
-                op = op and (TodoTable.title.lowerCase() like "%${search.lowercase()}%")
-            }
+        logger.info("Fetching todos for user: $userId, search: $search, status: $status, page: $page")
 
-            if (isDone != null) {
-                op = op and (TodoTable.isDone eq isDone)
-            }
+        val conditions = buildConditions(userUuid, search, status)
 
-            if (!urgency.isNullOrBlank()) {
-                op = op and (TodoTable.urgency eq urgency)
-            }
-            op
-        }.orderBy(
-            if (search.isNotBlank()) TodoTable.title to SortOrder.ASC
-            else TodoTable.createdAt to SortOrder.DESC
+        val total = TodoTable.selectAll().where(conditions).count()
+        val offset = ((page - 1) * perPage).toLong()
+
+        val todos = TodoDAO
+            .find(conditions)
+            .orderBy(TodoTable.createdAt to SortOrder.DESC)
+            .limit(perPage)
+            .offset(offset)
+            .toList() // Execute query here
+            .map { todoDAOToModel(it, baseUrl) }
+
+        logger.info("Found ${todos.size} todos out of $total total")
+
+        TodoListResponse(
+            todos = todos,
+            total = total,
+            page = page,
+            perPage = perPage
         )
-        .limit(perPage)
-        .offset(offset)
-        .map(::todoDAOToModel)
+    }
+
+    private fun buildConditions(
+        userUuid: UUID,
+        search: String,
+        status: String,
+    ): Op<Boolean> {
+        var conditions: Op<Boolean> = TodoTable.userId eq userUuid
+
+        if (search.isNotBlank()) {
+            conditions = conditions and (TodoTable.title.lowerCase() like "%${search.lowercase()}%")
+        }
+
+        // PERBAIKAN LOGIKA: Pastikan perbandingan string bersih
+        val statusClean = status.lowercase().trim()
+        when (statusClean) {
+            "completed" -> {
+                conditions = conditions and (TodoTable.isDone eq true)
+            }
+            "pending" -> {
+                conditions = conditions and (TodoTable.isDone eq false)
+            }
+            // "all", "semua", atau string lain tidak menambah filter isDone
+        }
+
+        return conditions
     }
 
     override suspend fun getById(todoId: String): Todo? = suspendTransaction {
+        val uuid = todoId.toUUIDOrNull() ?: return@suspendTransaction null
         TodoDAO
             .find {
-                TodoTable.id eq UUID.fromString(todoId)
+                (TodoTable.id eq uuid)
             }
             .limit(1)
-            .map(::todoDAOToModel)
+            .map{ todoDAOToModel(it, baseUrl) }
             .firstOrNull()
     }
 
     override suspend fun create(todo: Todo): String = suspendTransaction {
+        val userUuid = todo.userId.toUUIDOrNull() ?: throw IllegalArgumentException("Invalid User ID")
         val todoDAO = TodoDAO.new {
-            userId = UUID.fromString(todo.userId)
+            userId = userUuid
             title = todo.title
             description = todo.description
             cover = todo.cover
             isDone = todo.isDone
-            urgency = todo.urgency
             createdAt = todo.createdAt
             updatedAt = todo.updatedAt
         }
@@ -72,10 +106,13 @@ class TodoRepository : ITodoRepository {
     }
 
     override suspend fun update(userId: String, todoId: String, newTodo: Todo): Boolean = suspendTransaction {
+        val uuid = todoId.toUUIDOrNull() ?: return@suspendTransaction false
+        val userUuid = userId.toUUIDOrNull() ?: return@suspendTransaction false
+        
         val todoDAO = TodoDAO
             .find {
-                (TodoTable.id eq UUID.fromString(todoId)) and
-                        (TodoTable.userId eq UUID.fromString(userId))
+                (TodoTable.id eq uuid) and
+                        (TodoTable.userId eq userUuid)
             }
             .limit(1)
             .firstOrNull()
@@ -85,7 +122,6 @@ class TodoRepository : ITodoRepository {
             todoDAO.description = newTodo.description
             todoDAO.cover = newTodo.cover
             todoDAO.isDone = newTodo.isDone
-            todoDAO.urgency = newTodo.urgency
             todoDAO.updatedAt = newTodo.updatedAt
             true
         } else {
@@ -94,23 +130,33 @@ class TodoRepository : ITodoRepository {
     }
 
     override suspend fun delete(userId: String, todoId: String): Boolean = suspendTransaction {
+        val uuid = todoId.toUUIDOrNull() ?: return@suspendTransaction false
+        val userUuid = userId.toUUIDOrNull() ?: return@suspendTransaction false
+        
         val rowsDeleted = TodoTable.deleteWhere {
-            (TodoTable.id eq UUID.fromString(todoId)) and (TodoTable.userId eq UUID.fromString(userId))
+            (TodoTable.id eq uuid) and
+                    (TodoTable.userId eq userUuid)
         }
         rowsDeleted >= 1
     }
 
-    override suspend fun getStats(userId: String): Map<String, Long> = suspendTransaction {
-        val userUuid = UUID.fromString(userId)
+    override suspend fun getStats(userId: String): TodoStats = suspendTransaction {
+        val userUuid = userId.toUUIDOrNull() ?: return@suspendTransaction TodoStats(
+            total = 0, completed = 0, pending = 0, percentage = 0.0
+        )
         
-        val total = TodoDAO.find { TodoTable.userId eq userUuid }.count()
-        val finished = TodoDAO.find { (TodoTable.userId eq userUuid) and (TodoTable.isDone eq true) }.count()
-        val unfinished = TodoDAO.find { (TodoTable.userId eq userUuid) and (TodoTable.isDone eq false) }.count()
+        val allTodos = TodoDAO.find { TodoTable.userId eq userUuid }.toList()
+        
+        val total = allTodos.size
+        val completed = allTodos.count { it.isDone }
+        val pending = total - completed
+        val percentage = if (total > 0) (completed.toDouble() / total.toDouble() * 100.0) else 0.0
 
-        mapOf(
-            "total" to total,
-            "finished" to finished,
-            "unfinished" to unfinished
+        TodoStats(
+            total = total,
+            completed = completed,
+            pending = pending,
+            percentage = percentage
         )
     }
 

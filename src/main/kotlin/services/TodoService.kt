@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import org.delcom.data.AppException
 import org.delcom.data.DataResponse
 import org.delcom.data.TodoRequest
+import org.delcom.data.TodoStats
 import org.delcom.helpers.ServiceHelper
 import org.delcom.helpers.ValidatorHelper
 import org.delcom.repositories.ITodoRepository
@@ -30,24 +31,29 @@ class TodoService(
         val user = ServiceHelper.getAuthUser(call, userRepo)
 
         val search = call.request.queryParameters["search"] ?: ""
-        val isDoneParam = call.request.queryParameters["is_done"]
-        val isDone = when (isDoneParam) {
-            "1", "true" -> true
-            "0", "false" -> false
-            else -> null
-        }
-        
-        val urgency = call.request.queryParameters["urgency"]
-        
+        val status = call.request.queryParameters["status"] ?: "all"
         val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
         val perPage = call.request.queryParameters["perPage"]?.toIntOrNull() ?: 10
 
-        val todos = todoRepo.getAll(user.id, search, isDone, urgency, page, perPage)
+        val result = todoRepo.getAll(user.id, search, status, page, perPage)
 
         val response = DataResponse(
             "success",
             "Berhasil mengambil daftar todo saya",
-            mapOf(Pair("todos", todos))
+            result
+        )
+        call.respond(response)
+    }
+
+    // Mengambil statistik todo
+    suspend fun getStats(call: ApplicationCall) {
+        val user = ServiceHelper.getAuthUser(call, userRepo)
+        val stats = todoRepo.getStats(user.id)
+
+        val response = DataResponse(
+            "success",
+            "Berhasil mengambil statistik todo",
+            stats
         )
         call.respond(response)
     }
@@ -96,13 +102,11 @@ class TodoService(
                     val fileName = UUID.randomUUID().toString() + ext
                     val filePath = "uploads/todos/$fileName"
 
-                    withContext(Dispatchers.IO) {
-                        val file = File(filePath)
-                        file.parentFile.mkdirs() // pastikan folder ada
+                    val file = File(filePath)
+                    file.parentFile.mkdirs() // pastikan folder ada
 
-                        part.provider().copyAndClose(file.writeChannel())
-                        request.cover = filePath
-                    }
+                    part.provider().copyAndClose(file.writeChannel())
+                    request.cover = filePath
                 }
 
                 else -> {}
@@ -129,7 +133,6 @@ class TodoService(
         request.title = oldTodo.title
         request.description = oldTodo.description
         request.isDone = oldTodo.isDone
-        request.urgency = oldTodo.urgency
 
         val isUpdated = todoRepo.update(
             user.id,
@@ -276,18 +279,5 @@ class TodoService(
         }
 
         call.respondFile(file)
-    }
-
-    // Mengambil statistik todo
-    suspend fun getStats(call: ApplicationCall) {
-        val user = ServiceHelper.getAuthUser(call, userRepo)
-        val stats = todoRepo.getStats(user.id)
-
-        val response = DataResponse(
-            "success",
-            "Berhasil mengambil statistik todo",
-            stats
-        )
-        call.respond(response)
     }
 }
